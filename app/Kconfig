@@ -1,0 +1,91 @@
+# Copyright (c) 2026 Toni Lekic
+# SPDX-License-Identifier: Apache-2.0
+
+mainmenu "2DOF Tilt Platform"
+
+# All project-introduced Kconfigs use the TT_<COMPONENT>_ prefix to be
+# greppable and to make clear which component owns each setting.
+
+# --------------------------------------------------------------------
+# Motion (src/motion/) — stepper rates and S-curve ramp
+# --------------------------------------------------------------------
+
+config TT_MOTION_STEP_INTERVAL_NS
+	int "Initial step interval (ns)"
+	default 1000000
+	help
+	  Step interval set at motor init. Almost always overridden by the
+	  S-curve ramp inside move_pair_by; only matters for raw driver calls
+	  (e.g. STEPPER_CTRL_RUN_MODE_VELOCITY via 'platform run').
+
+config TT_MOTION_MAX_STEP_RATE
+	int "S-curve cruise step rate (microsteps/sec)"
+	default 8000
+	help
+	  Peak microstep rate during the S-curve cruise phase. With 1/64
+	  microstepping (12800 microsteps/rev), 8000 ≈ 37.5 RPM. Raise for
+	  faster moves; lower if motors skip steps under load.
+
+config TT_MOTION_MIN_STEP_RATE
+	int "S-curve start/end step rate (microsteps/sec)"
+	default 500
+	help
+	  Initial/final velocity of the ramp. Should sit below the motor's
+	  pull-in rate so the rotor accelerates from rest cleanly.
+
+config TT_MOTION_RAMP_STEPS
+	int "S-curve accel/decel distance (microsteps)"
+	default 400
+	help
+	  Number of microsteps over which velocity ramps MIN→MAX (and back).
+	  Larger = smoother but slower; smaller = quicker but more likely to
+	  skip steps. Default ~11.25° at 1/64 microstepping.
+
+config TT_MOTION_RAMP_SEGMENTS
+	int "S-curve velocity segment count per move"
+	default 32
+	help
+	  The S-curve is approximated as N constant-velocity segments per
+	  move. More = smoother profile, more inter-segment overhead.
+
+# --------------------------------------------------------------------
+# Homing (src/homing/) — also borrowed by src/pose_ctrl/ since both
+# components run the same probe-Jacobian + Newton refinement loop.
+# --------------------------------------------------------------------
+
+config TT_HOMING_PROBE_STEPS
+	int "Newton-refinement Jacobian probe size (microsteps)"
+	default 200
+	help
+	  Number of microsteps each axis is jogged to identify the
+	  (motor → IMU axis) Jacobian, used by both soft homing and the
+	  pose-ctrl Newton fallback. Should produce a few degrees of
+	  mechanical motion — large enough to lift the IMU response above
+	  noise, small enough to stay within the small-angle linearization.
+	  The PCB straps the TMC2209 to 1/64 microstepping (12800
+	  microsteps/rev = 0.0281°/microstep), so the default of 200 is
+	  ~5.6° per probe.
+
+config TT_HOMING_MAX_ITERATIONS
+	int "Newton-refinement max iterations"
+	default 3
+	help
+	  Maximum Newton-step refinement iterations after the Jacobian probe,
+	  for both homing's Stage 2 and the pose-ctrl Newton fallback. Each
+	  iteration reads the IMU and applies one move per axis.
+
+config TT_HOMING_CONVERGE_THRESH_MILLI_MS2
+	int "Lateral residual convergence threshold (milli-m/s²)"
+	default 400
+	help
+	  Lateral-accel magnitude below which the Newton iteration (in homing
+	  and pose control) is considered converged, AND the threshold below
+	  which the pose-ctrl IK fast path skips Newton refinement.
+
+	  Specified in milli-m/s² because Kconfig has no float type. 400 =
+	  0.4 m/s², which corresponds to ≈2.3° tilt residual at 1 g — well
+	  inside one microstep at 1/64 (0.028°) plus IMU noise. Tighter
+	  values cause Newton to run almost every set, which is unnecessary
+	  given step resolution and IMU noise.
+
+source "Kconfig.zephyr"
