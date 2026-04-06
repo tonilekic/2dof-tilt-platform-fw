@@ -1,0 +1,20 @@
+# Copyright (c) 2026 Toni Lekic
+# SPDX-License-Identifier: Apache-2.0
+
+manifest:
+  remotes:
+    - name: zephyrproject-rtos
+      url-base: https://github.com/zephyrproject-rtos
+
+  projects:
+    - name: zephyr
+      remote: zephyrproject-rtos
+      revision: v4.4.0-rc2
+      import:
+        # Only clone modules strictly needed for the XIAO nRF52840 Sense.
+        name-allowlist:
+          - cmsis_6    # required by the ARM port (Cortex-M4F)
+          - hal_nordic # required by the nRF52840 SoC
+
+  self:
+    path: 2dof-tilt-platform-fw
