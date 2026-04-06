@@ -1,0 +1,106 @@
+/*
+ * Copyright (c) 2026 Toni Lekic
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * DTS overlay for the 2DOF tilt platform on XIAO nRF52840 Sense.
+ *
+ * Each axis uses a TMC2209 stepper driver (hardware config: enable,
+ * microstepping) paired with a GPIO step/dir motion controller. An
+ * external SparkFun LSM6DSO IMU is mounted on the moving inner ring
+ * and wired to the user-accessible I²C bus (i2c1, D4/D5).
+ *
+ * Pin mapping (directly from schematic):
+ *   P0.02 → M1_DIR    (Motor 1 direction)
+ *   P0.03 → M1_STEP   (Motor 1 step)
+ *   P0.28 → M_EN      (Shared TMC2209 enable, active-low)
+ *   P0.29 → M2_DIR    (Motor 2 direction)
+ *   P1.11 → M2_STEP   (Motor 2 step)
+ *   P0.04 → IMU_SDA   (XIAO D4, i2c1)
+ *   P0.05 → IMU_SCL   (XIAO D5, i2c1)
+ *
+ * TODO: assign GPIOs for M1_MS1, M1_MS2, M2_MS1, M2_MS2 once wired.
+ */
+
+#include <zephyr/dt-bindings/sensor/lsm6dso.h>
+
+/ {
+	aliases {
+		motor1 = &motor1;
+		motor2 = &motor2;
+		stepper-driver1 = &tmc2209_1;
+		stepper-driver2 = &tmc2209_2;
+		imu = &lsm6dso;
+	};
+
+	/* --- Axis 1 ------------------------------------------------- */
+
+	tmc2209_1: tmc2209-1 {
+		compatible = "adi,tmc2209";
+		status = "okay";
+		en-gpios = <&gpio0 28 GPIO_ACTIVE_LOW>;
+		// m0-gpios = <&gpio1 12 GPIO_ACTIVE_HIGH>;
+		// m1-gpios = <&gpio1 13 GPIO_ACTIVE_HIGH>;
+		/* MS1/MS2 are hardware-strapped on the PCB to 1/64 μstep;
+		 * this property is metadata only so the driver reports
+		 * the correct resolution via get_micro_step_res. */
+		micro-step-res = <64>;
+	};
+
+	motor1: motor1 {
+		compatible = "zephyr,gpio-step-dir-stepper-ctrl";
+		status = "okay";
+		step-gpios = <&gpio0 3 GPIO_ACTIVE_HIGH>;
+		dir-gpios  = <&gpio0 2 GPIO_ACTIVE_HIGH>;
+		stepper-driver = <&tmc2209_1>;
+	};
+
+	/* --- Axis 2 ------------------------------------------------- */
+
+	tmc2209_2: tmc2209-2 {
+		compatible = "adi,tmc2209";
+		status = "okay";
+		en-gpios = <&gpio0 28 GPIO_ACTIVE_LOW>;
+		// m0-gpios = <&gpio1 14 GPIO_ACTIVE_HIGH>;
+		// m1-gpios = <&gpio1 15 GPIO_ACTIVE_HIGH>;
+		/* MS1/MS2 are hardware-strapped on the PCB to 1/64 μstep;
+		 * this property is metadata only so the driver reports
+		 * the correct resolution via get_micro_step_res. */
+		micro-step-res = <64>;
+	};
+
+	motor2: motor2 {
+		compatible = "zephyr,gpio-step-dir-stepper-ctrl";
+		status = "okay";
+		step-gpios = <&gpio1 11 GPIO_ACTIVE_HIGH>;
+		dir-gpios  = <&gpio0 29 GPIO_ACTIVE_HIGH>;
+		stepper-driver = <&tmc2209_2>;
+	};
+};
+
+/* Disable physical UART0 — its default pinctrl claims P1.11 (TX),
+ * which conflicts with motor2 step-gpios. Console uses USB CDC ACM. */
+&uart0 {
+	status = "disabled";
+};
+
+/* Disable the onboard LSM6DS3TR-C — the project uses the external LSM6DSO
+ * on the moving platform instead. Keeps i2c0 traffic-free. */
+&lsm6ds3tr_c {
+	status = "disabled";
+};
+
+/* --- External IMU on user I²C bus (i2c1, D4/D5) ------------------ */
+
+&i2c1 {
+	clock-frequency = <I2C_BITRATE_FAST>;
+
+	lsm6dso: lsm6dso@6b {
+		compatible = "st,lsm6dso";
+		reg = <0x6b>;
+		status = "okay";
+		accel-range = <LSM6DSO_DT_FS_2G>;
+		accel-odr = <LSM6DSO_DT_ODR_104Hz>;
+		gyro-range = <LSM6DSO_DT_FS_250DPS>;
+		gyro-odr = <LSM6DSO_DT_ODR_104Hz>;
+	};
+};

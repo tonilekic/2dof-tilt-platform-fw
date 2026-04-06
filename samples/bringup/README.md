@@ -5,7 +5,7 @@ Interactive GPIO shell over USB CDC ACM for PCB validation.
 ## Build
 
 ```bash
-west build -b xiao_ble/nrf52840 samples/bringup --pristine
+west build -b xiao_ble/nrf52840/sense samples/bringup --pristine
 west flash
 ```
 

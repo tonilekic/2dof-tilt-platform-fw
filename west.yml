@@ -15,6 +15,7 @@ manifest:
         name-allowlist:
           - cmsis_6    # required by the ARM port (Cortex-M4F)
           - hal_nordic # required by the nRF52840 SoC
+          - hal_st     # required by the LSM6DSO IMU driver (stmemsc)
 
   self:
     path: 2dof-tilt-platform-fw
