@@ -11,6 +11,7 @@ target_include_directories(app PRIVATE
     src/kinematics
     src/motion
     src/imu
+    src/calib
     src/homing
     src/pose_ctrl
 )
@@ -21,6 +22,7 @@ target_sources(app PRIVATE
     src/kinematics/kinematics.c
     src/motion/motion.c
     src/imu/imu.c
+    src/calib/calib.c
     src/homing/homing.c
     src/pose_ctrl/pose_ctrl.c
     src/shell_cmds/shell_cmds.c
