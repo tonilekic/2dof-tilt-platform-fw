@@ -20,9 +20,10 @@ control.
 6. [Motion control](#motion-control-stepper-rates-and-s-curve-ramp)
 7. [Soft homing algorithm](#soft-homing-algorithm)
 8. [Pose setting](#pose-setting)
-9. [Shell command reference](#shell-command-reference)
-10. [Configuration](#configuration)
-11. [Testing](#testing)
+9. [IMU calibration](#imu-calibration)
+10. [Shell command reference](#shell-command-reference)
+11. [Configuration](#configuration)
+12. [Testing](#testing)
 
 ---
 
@@ -82,8 +83,9 @@ flowchart TB
 | Component | File path | Owns | Pure? |
 |---|---|---|---|
 | **kinematics** | `src/kinematics/` | Math: tilt/azimuth, forward & inverse gimbal kinematics, S-curve velocity profile | ✓ pure |
+| **calib** | `src/calib/` | Math: 12-parameter affine accel-calibration least-squares fit + apply | ✓ pure |
 | **motion** | `src/motion/` | Stepper devices, parallel-pair S-curve moves, completion semaphores, motor-name parsing | hardware |
-| **imu** | `src/imu/` | LSM6DSO device, averaged accel reads | hardware |
+| **imu** | `src/imu/` | LSM6DSO device, averaged accel reads (raw + calibrated), calibration session & persistence | hardware |
 | **homing** | `src/homing/` | 3-stage soft-home, cached level Jacobian, "homed" state | orchestrator |
 | **pose_ctrl** | `src/pose_ctrl/` | `set(θ, φ)`: IK fast path + Newton fallback | orchestrator |
 | **shell_cmds** | `src/shell_cmds/` | `platform <cmd>` → component API dispatch | glue |
@@ -598,6 +600,108 @@ Implementation in [`pose_ctrl.c`](src/pose_ctrl/pose_ctrl.c).
 
 ---
 
+## IMU calibration
+
+An uncalibrated LSM6DSO reads a static accel with a few tenths of a m/s² of
+error — dominated by the **zero-g offset** (datasheet typ ±20 mg, up to
+±40 mg ≈ 0.39 m/s²), plus sensitivity (scale) error, axis non-orthogonality,
+and the **mechanical mounting misalignment** of the chip relative to the
+platform frame. On this rig the residual lateral accel after a `set` is
+often ≈ 0.4 m/s², i.e. about a 2.3° tilt error.
+
+### Model
+
+We fit a single **12-parameter affine map** applied in the read path:
+
+$$
+\mathbf{a}_\mathrm{corrected} = \mathbf{A} \cdot
+\begin{pmatrix} a_\mathrm{raw,x} \\ a_\mathrm{raw,y} \\ a_\mathrm{raw,z} \\ 1 \end{pmatrix},
+\qquad \mathbf{A} \in \mathbb{R}^{3\times4}
+$$
+
+The 3×3 block absorbs scale + cross-axis/misalignment; the 4th column is the
+bias. Crucially this folds the **IMU-to-platform mounting rotation** into the
+same map, so corrected readings obey the ideal IMU-frame gravity model the
+kinematics already assume — **homing, pose_ctrl and kinematics need no
+changes**, the correction is entirely inside `imu_read_accel_avg()`.
+
+> A magnitude-only ("ellipsoid") fit — the kind that only needs `|a| = g` and
+> no known orientation — **cannot** recover the mounting rotation, because a
+> rotation preserves magnitude. That is exactly why we establish each pose's
+> true gravity direction with an external laser reference.
+
+### The 6-position laser procedure
+
+Mount a laser pointer to the DUT frame and use a self-leveling cross-line
+laser as the absolute reference. Its two beams (one vertical, one horizontal)
+pin the platform orientation in exactly the 2 DOF the gimbal controls. For
+each of the six poses, drive the platform (with `platform move`) until the
+DUT-frame pointer lands on the cross reference, then capture:
+
+| Pose | IMU axis pointing up | Target reading (proper accel) |
+|---|---|---|
+| `x+` | +x_imu | (+g, 0, 0) |
+| `x-` | −x_imu (= the level pose) | (−g, 0, 0) |
+| `y+` | +y_imu | (0, +g, 0) |
+| `y-` | −y_imu | (0, −g, 0) |
+| `z+` | +z_imu | (0, 0, +g) |
+| `z-` | −z_imu | (0, 0, −g) |
+
+The laser's ±1.5 mm / 5 m spec is an angular floor of atan(1.5/5000) ≈
+**0.017°** — far tighter than the IMU, so it is effectively the truth.
+
+### Solving
+
+Each captured pose gives one observation (raw vector ↔ known target). The fit
+is linear least squares; because the three output rows share the same normal
+matrix N = Σ xₚxₚᵀ, the whole solve is **one 4×4 elimination with three
+right-hand sides** — trivial on the M4F. With six poses that's 18 equations
+for 12 unknowns (overdetermined); the reported RMS residual is the headline
+"how good is this calibration" number. The math is the pure, host-tested
+[`calib`](src/calib/calib.c) module (ST AN3192 / DM00119044 method).
+
+### Persistence
+
+A solved map is stored as a versioned blob via the Zephyr **settings**
+subsystem (NVS backend on the board's `storage_partition`) and reloaded at
+boot. `valid = false` means "no calibration" → raw pass-through, which
+reproduces the pre-calibration behaviour exactly.
+
+### Expected improvement
+
+| Metric | Uncalibrated | After calibration |
+|---|---|---|
+| Static accel error | ~0.4 m/s² | ~0.02–0.05 m/s² |
+| Tilt error (any θ) | ~2.3° | ~0.1–0.3° |
+| Azimuth error @ θ=30° | ~4.7° | ~0.3–0.6° |
+
+Roughly a **10× improvement**, with temperature drift between calibration and
+use as the residual floor (the die temperature is logged at solve time for
+exactly this reason). Once calibrated you can safely tighten
+`TT_HOMING_CONVERGE_THRESH_MILLI_MS2` so the IK fast path converges to step
+resolution rather than to IMU bias.
+
+### Worked session
+
+```
+uart:~$ platform calib start
+Calibration session started. Level each IMU axis with the laser, then ...
+uart:~$ platform calib capture x-      # level pose first
+Captured x-: raw ax=-9.412 ay=+0.231 az=-0.187 m/s²  (1/6 poses)
+uart:~$ platform calib capture x+
+...
+uart:~$ platform calib capture z-
+Captured z-: raw ax=+0.043 ay=-0.092 az=-9.560 m/s²  (6/6 poses)
+uart:~$ platform calib solve
+Calibration solved, residual = 0.018 m/s² (RMS).
+A = [3×4 affine, a_corrected = A·(a_raw,1)]:
+  [+1.00731 +0.00194 -0.00981 | +0.34812]
+  [-0.01492 +0.97214 +0.02488 | -0.19905]
+  [+0.00803 -0.01970 +1.00942 | +0.15003]
+```
+
+---
+
 ## Shell command reference
 
 Connect via USB CDC ACM (115200 8N1).
@@ -613,6 +717,11 @@ Connect via USB CDC ACM (115200 8N1).
 | `platform home` | Run the 3-stage soft homing |
 | `platform set <θ> <φ>` | Drive platform to (tilt, azimuth) in degrees |
 | `platform imu read` | Read accel and print (a_xyz, tilt, azimuth) |
+| `platform calib start` | Begin a fresh 6-pose calibration session |
+| `platform calib capture <x±\|y±\|z±>` | Capture the current laser-leveled pose |
+| `platform calib solve` | Solve the affine fit, install and persist it |
+| `platform calib show` | Print the active calibration map |
+| `platform calib clear` | Drop calibration (raw pass-through), erase stored |
 | `platform dfu` | Reboot into the UF2 bootloader |
 
 ### Typical session
@@ -690,6 +799,7 @@ Currently covered:
 | Suite | Coverage |
 |---|---|
 | `app.kinematics` | Tilt/azimuth conversions, IK round-trips at multiple poses, S-curve velocity profile (start/cruise/decel/triangular/monotonic) |
+| `app.calib` | Affine fit recovery (identity + bias/scale/misalignment), residual vs. injected noise, error paths (too few / degenerate poses), in-place and pass-through apply |
 
 To add tests for hardware-touching components (motion, imu, homing), use
 the `zephyr,fake-stepper-controller` upstream driver and a fake
